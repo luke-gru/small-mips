@@ -185,7 +185,7 @@ class Parser
         end
       end
       consume(:RPAREN, msg: "Expected ')' after function arguments")
-      consume(:EQUAL, msg: "Expected '=' before function body");
+      consume(:EQUAL, msg: "Expected '=' before function body")
       body = parse_expression()
       FunDeclNode.new(fn_name, arg_exprs, body)
     else
@@ -262,6 +262,67 @@ class MipsCompiler
   RA  = "$ra"
 
   class MipsFrame
+    attr_reader :name
+    attr_accessor :num_temps
+    def initialize(name)
+      @name = name
+      @num_temps = 0
+    end
+  end
+
+  class Temporaries
+    include Nodes
+    attr_reader :main, :frames
+    def initialize(ast)
+      @ast = ast
+      @main = MipsFrame.new("main")
+      @frames = [@main]
+      @frame = @main
+    end
+
+    def find_temps
+      temps = []
+      @ast.decls.each do |decl|
+        temps << n_temps(decl)
+      end
+      @frame.num_temps = temps.max
+    end
+
+    def num_temps_for(fn_name)
+      frame = @frames.find { |f| f.name == fn_name }
+      raise "Frame for #{fn_name} not found" unless frame
+      frame.num_temps
+    end
+
+    private
+    def n_temps(expr)
+      case expr
+      when NumberNode, VariableNode
+        0
+      when OpNode
+        max(n_temps(expr.lhs), n_temps(expr.rhs) + 1)
+      when IfElseNode
+        max(n_temps(expr.lhs), n_temps(expr.rhs) + 1, n_temps(expr.if_br), n_temps(expr.else_br))
+      when CallNode
+        max(*(expr.args.map { |expr| n_temps(expr) }))
+      when ExprDeclNode
+        n_temps(expr.expr, )
+      when FunDeclNode
+        old_frame = @frame
+        @frame = MipsFrame.new(expr.name)
+        temps = n_temps(expr.expr)
+        @frame.num_temps = temps
+        @frames << @frame
+        @frame = old_frame
+        temps
+      else
+        raise "Unknown node: #{expr.class}"
+      end
+    end
+
+    def max(*n)
+      n.max
+    end
   end
 
   attr_reader :buf
@@ -271,9 +332,12 @@ class MipsCompiler
     @fun_nodes = []
     @output_functions = false
     @cur_func = nil
+    @temps = nil
   end
 
   def compile
+    @temps = Temporaries.new(@ast)
+    @temps.find_temps
     cgen(@ast)
     print()
     exitt()
