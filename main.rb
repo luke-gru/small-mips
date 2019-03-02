@@ -26,6 +26,12 @@ class Lexer
         return [:PLUS, '+']
       elsif @s.scan /\Adef/
         return [:DEF, 'def']
+      elsif @s.scan /\Aif/
+        return [:IF, 'if']
+      elsif @s.scan /\Athen/
+        return [:THEN, 'then']
+      elsif @s.scan /\Aelse/
+        return [:ELSE, 'else']
       elsif @s.scan /\A=/
         return [:EQUAL, '=']
       elsif (ident = @s.scan /\A\w+/)
@@ -86,6 +92,15 @@ module Nodes
     attr_reader :expr
     def initialize(expr)
       @expr = expr
+    end
+  end
+  class IfElseNode
+    attr_reader :lhs, :rhs, :if_br, :else_br
+    def initialize(lhs, rhs, if_br, else_br)
+      @lhs = lhs
+      @rhs = rhs
+      @if_br = if_br
+      @else_br = else_br
     end
   end
 end
@@ -180,6 +195,16 @@ class Parser
       end
       advance()
       CallNode.new(fn_name, args)
+    elsif match?(:IF)
+      advance()
+      lhs = parse_expression()
+      consume(:EQUAL, "Expected '=' after if lhs")
+      rhs = parse_expression()
+      consume(:THEN, "Expected 'then' after if rhs")
+      if_expr = parse_expression()
+      consume(:ELSE, "Expected 'else' in if expr")
+      else_expr = parse_expression()
+      IfElseNode.new(lhs, rhs, if_expr, else_expr)
     else
       raise Error, "Unexpected token: #{@curtok}"
     end
@@ -187,6 +212,19 @@ class Parser
 
   def eof?
     @curtok[0] == :EOF
+  end
+end
+
+class Label
+  $label_num = 0
+  def initialize(type)
+    @type = type
+    @num = $label_num
+    $label_num+=1
+  end
+
+  def to_s
+    "#{@type}_label#{@num}"
   end
 end
 
@@ -214,6 +252,10 @@ class MipsCompiler
 
   def cgen(expr)
     case expr
+    when ProgramNode
+      expr.decls.each { |decl| cgen(decl) }
+    when ExprDeclNode
+      cgen(expr.expr)
     when NumberNode
       @buf << "li #{ACC} #{expr.number}"
     when OpNode
@@ -223,8 +265,20 @@ class MipsCompiler
       load_stack_top(TMP)
       add(ACC, TMP)
       pop()
-    when ProgramNode
-      expr.decls.each { |decl| cgen(decl) }
+    when IfElseNode
+      cgen(expr.lhs)
+      push(ACC)
+      cgen(expr.rhs)
+      load_stack_top(TMP)
+      pop()
+      true_lbl = Label.new(:true)
+      end_lbl = Label.new(:endif)
+      @buf << "beq #{ACC} #{TMP} #{true_lbl}"
+      cgen(expr.else_br)
+      @buf << "b #{end_lbl}"
+      @buf << "#{true_lbl}:"
+      cgen(expr.if_br)
+      @buf << "#{end_lbl}:"
     else
       raise Error, "unknown node #{expr.class}"
     end
