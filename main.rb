@@ -20,10 +20,14 @@ class Lexer
         return [:LPAREN, '(']
       elsif @s.scan /\A\)/
         return [:RPAREN, '(']
+      elsif @s.scan /\A,/
+        return [:COMMA, ',']
       elsif (num = @s.scan /\A(\d+)/)
         return [:NUMBER, num.to_i]
       elsif @s.scan /\A\+/
         return [:PLUS, '+']
+      elsif @s.scan /\A\-/
+        return [:MINUS, '-']
       elsif @s.scan /\Adef/
         return [:DEF, 'def']
       elsif @s.scan /\Aif/
@@ -39,7 +43,7 @@ class Lexer
       elsif @s.scan /\A\s+/ # whitespace
         next
       else
-        raise Error, "Unrecognized character: #{@s.peek(0)}"
+        raise Error, "Unrecognized character: #{@s.peek(1)}"
       end
     end
     if @emitted_eof
@@ -75,6 +79,12 @@ module Nodes
       @expr = expr
     end
   end
+  class ParamNode
+  attr_reader :name
+    def initialize(name)
+      @name = name
+    end
+  end
   class ProgramNode
     attr_reader :decls
     def initialize(decls)
@@ -103,6 +113,12 @@ module Nodes
       @else_br = else_br
     end
   end
+  class VariableNode
+    attr_reader :name
+    def initialize(name)
+      @name = name
+    end
+  end
 end
 
 class Parser
@@ -112,6 +128,7 @@ class Parser
     @l = lexer
     @tokbuf = []
     advance()
+    @last_expr = nil
   end
 
   def advance
@@ -137,8 +154,8 @@ class Parser
     @curtok[0] == kind ? @curtok[1] : nil
   end
 
-  def consume(kind, msg)
-    if match?(kind)
+  def consume(*kinds, msg: "Error")
+    if kinds.any? { |k| match?(k) }
       ret = @curtok[1]
       advance()
       ret
@@ -158,14 +175,18 @@ class Parser
   def parse_decl
     if match?(:DEF)
       advance()
-      fn_name = consume(:IDENT, "Expected identifier after def")
-      consume(:LPAREN, "Expected '(' after function name")
+      fn_name = consume(:IDENT, msg: "Expected identifier after def")
+      consume(:LPAREN, msg: "Expected '(' after function name")
       arg_exprs = []
-      until match?(:RPAREN)
-        arg_exprs << parse_expression()
+      while match?(:IDENT)
+        arg_exprs << ParamNode.new(@curtok[1])
+        advance()
+        if match?(:COMMA)
+          advance()
+        end
       end
-      consume(:RPAREN, "Expected ')' after function arguments")
-      consume(:EQUAL, "Expected '=' before function body");
+      consume(:RPAREN, msg: "Expected ')' after function arguments")
+      consume(:EQUAL, msg: "Expected '=' before function body");
       body = parse_expression()
       FunDeclNode.new(fn_name, arg_exprs, body)
     else
@@ -174,17 +195,16 @@ class Parser
   end
 
   def parse_expression
-    if match?(:NUMBER)
+    @last_expr = if match?(:PLUS) || match?(:MINUS)
+      lhs = @last_expr
+      op = @curtok[0]
+      consume(:PLUS, :MINUS, msg: "Expected '+' or '-'")
+      rhs = parse_expression()
+      OpNode.new(lhs, rhs, op)
+    elsif match?(:NUMBER)
       numtok = @curtok
       advance()
-      if match?(:PLUS)
-        lhs = NumberNode.new(numtok[1])
-        advance()
-        rhs = parse_expression()
-        OpNode.new(lhs, rhs, :PLUS)
-      else
-        NumberNode.new(numtok[1])
-      end
+      NumberNode.new(numtok[1])
     elsif match?(:IDENT) && peek()[0] == :LPAREN
       fn_name = @curtok[1]
       advance()
@@ -198,13 +218,16 @@ class Parser
     elsif match?(:IF)
       advance()
       lhs = parse_expression()
-      consume(:EQUAL, "Expected '=' after if lhs")
+      consume(:EQUAL, msg: "Expected '=' after if lhs")
       rhs = parse_expression()
-      consume(:THEN, "Expected 'then' after if rhs")
+      consume(:THEN, msg: "Expected 'then' after if rhs")
       if_expr = parse_expression()
-      consume(:ELSE, "Expected 'else' in if expr")
+      consume(:ELSE, msg: "Expected 'else' in if expr")
       else_expr = parse_expression()
       IfElseNode.new(lhs, rhs, if_expr, else_expr)
+    elsif match?(:IDENT)
+      ident = consume(:IDENT, msg: "expected identifier")
+      VariableNode.new(ident)
     else
       raise Error, "Unexpected token: #{@curtok}"
     end
@@ -246,6 +269,7 @@ class MipsCompiler
     @buf = []
     @fun_nodes = []
     @output_functions = false
+    @cur_func = nil
   end
 
   def compile
@@ -269,7 +293,11 @@ class MipsCompiler
       push(ACC)
       cgen(expr.rhs)
       load_stack_top(TMP)
-      add(ACC, TMP)
+      if expr.op == :PLUS
+        add(ACC, TMP)
+      else
+        sub(ACC, TMP)
+      end
       pop()
     when IfElseNode
       cgen(expr.lhs)
@@ -297,7 +325,10 @@ class MipsCompiler
         @buf << "#{expr.name}_entry:"
         @buf << "move #{FP} #{SP}"
         push(RA)
+        old = @cur_func
+        @cur_func = expr
         cgen(expr.expr)
+        @cur_func = old
         @buf << "lw #{RA} 4(#{SP})"
         pop_frame(expr.args.size)
         @buf << "lw #{FP} 0(#{SP})"
@@ -305,6 +336,18 @@ class MipsCompiler
       else
         @fun_nodes << expr
       end
+    when VariableNode
+      if @cur_func.nil?
+        raise Error, "variable #{expr.name} needs to be inside function"
+      end
+      unless @output_functions
+        raise Error, "need to be outputting functions"
+      end
+      param_index = @cur_func.args.find_index { |arg| arg.name == expr.name }
+      if param_index == nil
+        raise Error, "variable name #{expr.name} not found"
+      end
+      @buf << "lw #{ACC} #{4*param_index+4}(#{FP})"
     else
       raise Error, "unknown node #{expr.class}"
     end
@@ -329,6 +372,10 @@ class MipsCompiler
 
   def add(reg1, reg2)
     @buf << "add #{ACC} #{reg1} #{reg2}"
+  end
+
+  def sub(reg1, reg2)
+    @buf << "sub #{ACC} #{reg1} #{reg2}"
   end
 
   def print
