@@ -128,7 +128,6 @@ class Parser
     @l = lexer
     @tokbuf = []
     advance()
-    @last_expr = nil
   end
 
   def advance
@@ -195,13 +194,7 @@ class Parser
   end
 
   def parse_expression
-    @last_expr = if match?(:PLUS) || match?(:MINUS)
-      lhs = @last_expr
-      op = @curtok[0]
-      consume(:PLUS, :MINUS, msg: "Expected '+' or '-'")
-      rhs = parse_expression()
-      OpNode.new(lhs, rhs, op)
-    elsif match?(:NUMBER)
+    ret = if match?(:NUMBER)
       numtok = @curtok
       advance()
       NumberNode.new(numtok[1])
@@ -230,6 +223,14 @@ class Parser
       VariableNode.new(ident)
     else
       raise Error, "Unexpected token: #{@curtok}"
+    end
+    if match?(:PLUS) || match?(:MINUS)
+      op = @curtok[0]
+      consume(:PLUS, :MINUS, msg: "Expected '+' or '-'")
+      rhs = parse_expression()
+      OpNode.new(ret, rhs, op)
+    else
+      ret
     end
   end
 
@@ -375,7 +376,7 @@ class MipsCompiler
   end
 
   def sub(reg1, reg2)
-    @buf << "sub #{ACC} #{reg1} #{reg2}"
+    @buf << "sub #{ACC} #{reg2} #{reg1}"
   end
 
   def print
