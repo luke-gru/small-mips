@@ -1,7 +1,7 @@
 require_relative 'main'
 require 'tempfile'
 
-l = Lexer.new("if 0 = 1 then 3 else 4")
+l = Lexer.new("def func() = 1\nfunc()")
 #res = l.tokenize
 #pp res
 

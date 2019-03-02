@@ -157,7 +157,7 @@ class Parser
 
   def parse_decl
     if match?(:DEF)
-      advance();
+      advance()
       fn_name = consume(:IDENT, "Expected identifier after def")
       consume(:LPAREN, "Expected '(' after function name")
       arg_exprs = []
@@ -234,6 +234,8 @@ class MipsCompiler
   ACC = "$a0"
   TMP = "$t1"
   SP  = "$sp"
+  FP  = "$fp"
+  RA  = "$ra"
 
   class MipsFrame
   end
@@ -242,12 +244,16 @@ class MipsCompiler
   def initialize(ast)
     @ast = ast
     @buf = []
+    @fun_nodes = []
+    @output_functions = false
   end
 
   def compile
     cgen(@ast)
     print()
     exitt()
+    @output_functions = true
+    @fun_nodes.each { |fnode| cgen(fnode) }
   end
 
   def cgen(expr)
@@ -279,6 +285,26 @@ class MipsCompiler
       @buf << "#{true_lbl}:"
       cgen(expr.if_br)
       @buf << "#{end_lbl}:"
+    when CallNode
+      push(FP)
+      expr.args.reverse_each do |arg|
+        cgen(arg)
+        push(ACC)
+      end
+      @buf << "jal #{expr.name}_entry"
+    when FunDeclNode
+      if @output_functions
+        @buf << "#{expr.name}_entry:"
+        @buf << "move #{FP} #{SP}"
+        push(RA)
+        cgen(expr.expr)
+        @buf << "lw #{RA} 4(#{SP})"
+        pop_frame(expr.args.size)
+        @buf << "lw #{FP} 0(#{SP})"
+        @buf << "jr #{RA}"
+      else
+        @fun_nodes << expr
+      end
     else
       raise Error, "unknown node #{expr.class}"
     end
@@ -295,6 +321,10 @@ class MipsCompiler
 
   def load_stack_top(reg)
     @buf << "lw #{reg} 4(#{SP})"
+  end
+
+  def pop_frame(nargs)
+    @buf << "addiu #{SP} #{SP} #{4*nargs+8}"
   end
 
   def add(reg1, reg2)
