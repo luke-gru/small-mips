@@ -338,50 +338,48 @@ class MipsCompiler
   def compile
     @temps = Temporaries.new(@ast)
     @temps.find_temps
-    cgen(@ast)
+    cgen(@ast, 4)
     print()
     exitt()
     @output_functions = true
-    @fun_nodes.each { |fnode| cgen(fnode) }
+    @fun_nodes.each { |fnode| cgen(fnode, 4) }
   end
 
-  def cgen(expr)
+  def cgen(expr, nt)
     case expr
     when ProgramNode
-      expr.decls.each { |decl| cgen(decl) }
+      expr.decls.each { |decl| cgen(decl, nt) }
     when ExprDeclNode
-      cgen(expr.expr)
+      cgen(expr.expr, nt)
     when NumberNode
       @buf << "li #{ACC} #{expr.number}"
     when OpNode
-      cgen(expr.lhs)
-      push(ACC)
-      cgen(expr.rhs)
-      load_stack_top(TMP)
+      cgen(expr.lhs, nt)
+      @buf << "sw #{ACC} #{-nt}(#{FP})" # store into temp spot in frame
+      cgen(expr.rhs, nt+4)
+      @buf << "lw #{TMP} #{-nt}(#{FP})"
       if expr.op == :PLUS
         add(ACC, TMP)
       else
         sub(ACC, TMP)
       end
-      pop()
     when IfElseNode
-      cgen(expr.lhs)
-      push(ACC)
-      cgen(expr.rhs)
-      load_stack_top(TMP)
-      pop()
+      cgen(expr.lhs, nt)
+      @buf << "sw #{ACC} #{-nt}(#{FP})" # store into temp spot in frame
+      cgen(expr.rhs, nt+4)
+      @buf << "lw #{TMP} #{-nt}(#{FP})"
       true_lbl = Label.new(:true)
       end_lbl = Label.new(:endif)
       @buf << "beq #{ACC} #{TMP} #{true_lbl}"
-      cgen(expr.else_br)
+      cgen(expr.else_br, nt)
       @buf << "b #{end_lbl}"
       @buf << "#{true_lbl}:"
-      cgen(expr.if_br)
+      cgen(expr.if_br, nt)
       @buf << "#{end_lbl}:"
     when CallNode
       push(FP)
       expr.args.reverse_each do |arg|
-        cgen(arg)
+        cgen(arg, nt)
         push(ACC)
       end
       @buf << "jal #{expr.name}_entry"
@@ -390,12 +388,13 @@ class MipsCompiler
         @buf << "#{expr.name}_entry:"
         @buf << "move #{FP} #{SP}"
         push(RA)
+        push_frame_temps(expr.name)
         old = @cur_func
         @cur_func = expr
-        cgen(expr.expr)
+        cgen(expr.expr, 4)
         @cur_func = old
-        @buf << "lw #{RA} 4(#{SP})"
-        pop_frame(expr.args.size)
+        @buf << "lw #{RA} 0(#{FP})"
+        pop_frame(expr.name, expr.args.size)
         @buf << "lw #{FP} 0(#{SP})"
         @buf << "jr #{RA}"
       else
@@ -431,8 +430,19 @@ class MipsCompiler
     @buf << "lw #{reg} 4(#{SP})"
   end
 
-  def pop_frame(nargs)
-    @buf << "addiu #{SP} #{SP} #{4*nargs+8}"
+  def push_frame_temps(fn_name)
+    num_temps = @temps.num_temps_for(fn_name)
+    @buf << "addiu #{SP} #{SP} #{-4*num_temps}"
+  end
+
+  def pop_frame_temps(fn_name)
+    num_temps = @temps.num_temps_for(fn_name)
+    @buf << "addiu #{SP} #{SP} #{4*num_temps}"
+  end
+
+  def pop_frame(fn_name, nargs)
+    num_temps = @temps.num_temps_for(fn_name)
+    @buf << "addiu #{SP} #{SP} #{(4*nargs)+8+(4*num_temps)}"
   end
 
   def add(reg1, reg2)
