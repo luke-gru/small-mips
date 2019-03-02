@@ -1,12 +1,14 @@
 require_relative 'main'
 require 'tempfile'
 
-l = Lexer.new("1+1+5")
+l = Lexer.new("def okay() = 1\nokay()")
 #res = l.tokenize
 #pp res
 
 p = Parser.new(l)
 ast = p.parse()
+pp ast
+=begin
 c = MipsCompiler.new(ast)
 c.compile
 code = c.output
@@ -17,3 +19,4 @@ file = Tempfile.open("mips") do |f|
   f
 end
 system("spim -file #{file.path}")
+=end

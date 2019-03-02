@@ -24,7 +24,13 @@ class Lexer
         return [:NUMBER, num.to_i]
       elsif @s.scan /\A\+/
         return [:PLUS, '+']
-      elsif @s.scan /\A\w+/ # whitespace
+      elsif @s.scan /\Adef/
+        return [:DEF, 'def']
+      elsif @s.scan /\A=/
+        return [:EQUAL, '=']
+      elsif (ident = @s.scan /\A\w+/)
+        return [:IDENT, ident]
+      elsif @s.scan /\A\s+/ # whitespace
         next
       else
         raise Error, "Unrecognized character: #{@s.peek(0)}"
@@ -48,11 +54,38 @@ module Nodes
   end
 
   class OpNode
-    attr_reader :lhs, :rhs
+    attr_reader :lhs, :rhs, :op
     def initialize(lhs, rhs, op)
       @lhs = lhs
       @rhs = rhs
       @op = op
+    end
+  end
+  class FunDeclNode
+    attr_reader :name, :args, :expr
+    def initialize(name, args, expr)
+      @name = name
+      @args = args
+      @expr = expr
+    end
+  end
+  class ProgramNode
+    attr_reader :decls
+    def initialize(decls)
+      @decls = decls
+    end
+  end
+  class CallNode
+    attr_reader :name, :args
+    def initialize(name, args)
+      @name = name
+      @args = args
+    end
+  end
+  class ExprDeclNode
+    attr_reader :expr
+    def initialize(expr)
+      @expr = expr
     end
   end
 end
@@ -67,6 +100,7 @@ class Parser
   end
 
   def advance
+    raise "tokbuf size" if @tokbuf.size > 1
     if @tokbuf.size == 1
       @curtok = @tokbuf.pop()
     else
@@ -75,8 +109,11 @@ class Parser
   end
 
   def peek
+    raise "tokbuf > 1" if @tokbuf.size > 1
     if @tokbuf.size == 0
+      prev = @curtok
       @tokbuf << advance()
+      @curtok = prev
     end
     @tokbuf[0]
   end
@@ -85,11 +122,40 @@ class Parser
     @curtok[0] == kind ? @curtok[1] : nil
   end
 
-  def parse
-    until eof?
-      res = parse_expression
+  def consume(kind, msg)
+    if match?(kind)
+      ret = @curtok[1]
+      advance()
+      ret
+    else
+      raise Error, msg
     end
-    res
+  end
+
+  def parse
+    decls = []
+    until eof?
+      decls << parse_decl()
+    end
+    ProgramNode.new(decls)
+  end
+
+  def parse_decl
+    if match?(:DEF)
+      advance();
+      fn_name = consume(:IDENT, "Expected identifier after def")
+      consume(:LPAREN, "Expected '(' after function name")
+      arg_exprs = []
+      until match?(:RPAREN)
+        arg_exprs << parse_expression()
+      end
+      consume(:RPAREN, "Expected ')' after function arguments")
+      consume(:EQUAL, "Expected '=' before function body");
+      body = parse_expression()
+      FunDeclNode.new(fn_name, arg_exprs, body)
+    else
+      ExprDeclNode.new(parse_expression())
+    end
   end
 
   def parse_expression
@@ -104,6 +170,16 @@ class Parser
       else
         NumberNode.new(numtok[1])
       end
+    elsif match?(:IDENT) && peek()[0] == :LPAREN
+      fn_name = @curtok[1]
+      advance()
+      advance() # '('
+      args = []
+      until match?(:RPAREN)
+        args << parse_expression()
+      end
+      advance()
+      CallNode.new(fn_name, args)
     else
       raise Error, "Unexpected token: #{@curtok}"
     end
@@ -120,6 +196,10 @@ class MipsCompiler
   ACC = "$a0"
   TMP = "$t1"
   SP  = "$sp"
+
+  class MipsFrame
+  end
+
   attr_reader :buf
   def initialize(ast)
     @ast = ast
@@ -143,8 +223,10 @@ class MipsCompiler
       load_stack_top(TMP)
       add(ACC, TMP)
       pop()
+    when ProgramNode
+      expr.decls.each { |decl| cgen(decl) }
     else
-      raise Error, "unknown node"
+      raise Error, "unknown node #{expr.class}"
     end
   end
 
