@@ -261,6 +261,27 @@ class MipsCompiler
   FP  = "$fp"
   RA  = "$ra"
 
+=begin
+MIPS Frame (Activation Record) layout (stack grows down):
+
+old fp
+---
+arg n
+---
+...
+---
+arg 0
+---
+return addr     $FP
+---
+Temp N
+---
+...
+---
+Temp 0
+                $SP
+=end
+
   class MipsFrame
     attr_reader :name
     attr_accessor :num_temps
@@ -270,6 +291,8 @@ class MipsCompiler
     end
   end
 
+  # Temps are saved in frame instead of constantly pushing/loading from stack,
+  # so number of needed temps is computed for each frame, including main.
   class Temporaries
     include Nodes
     attr_reader :main, :frames
@@ -339,7 +362,6 @@ class MipsCompiler
     @temps = Temporaries.new(@ast)
     @temps.find_temps
     cgen(@ast, 4)
-    print()
     exitt()
     @output_functions = true
     @fun_nodes.each { |fnode| cgen(fnode, 4) }
@@ -377,15 +399,20 @@ class MipsCompiler
       cgen(expr.if_br, nt)
       @buf << "#{end_lbl}:"
     when CallNode
-      push(FP)
-      expr.args.reverse_each do |arg|
-        cgen(arg, nt)
-        push(ACC)
+      if expr.name == 'print' # syscall
+        cgen(expr.args[0], nt)
+        printt()
+      else
+        push(FP) # caller
+        expr.args.reverse_each do |arg|
+          cgen(arg, nt)
+          push(ACC)
+        end
+        @buf << "jal #{expr.name}_entry"
       end
-      @buf << "jal #{expr.name}_entry"
     when FunDeclNode
       if @output_functions
-        @buf << "#{expr.name}_entry:"
+        @buf << "#{expr.name}_entry:" # callee
         @buf << "move #{FP} #{SP}"
         push(RA)
         push_frame_temps(expr.name)
@@ -453,7 +480,7 @@ class MipsCompiler
     @buf << "sub #{ACC} #{reg2} #{reg1}"
   end
 
-  def print
+  def printt
     @buf << "li $v0 1"
     @buf << "syscall"
   end
